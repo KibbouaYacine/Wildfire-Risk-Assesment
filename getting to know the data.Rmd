@@ -1,0 +1,837 @@
+---
+title: "Untitled"
+author: "Yacine Kibboua"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setlocale("LC_TIME", "C")  # "C" is the default English POSIX locale
+```
+
+#creating the full data
+
+```{r}
+positives <- read_csv("positives.csv")
+negatives <- read_csv("negatives.csv")
+```
+
+```{r}
+positives2 <- positives %>% 
+  select(-c(ignition_points, burned_areas, burned_area_has)) %>% 
+  mutate(fire_occured = 1, 
+         fire_occured = as.factor(fire_occured))
+
+negatives2 <- negatives %>%
+  select(-c(ignition_points, burned_areas, burned_area_has)) %>% 
+  mutate(fire_occured = 0, 
+         fire_occured = as.factor(fire_occured))
+```
+
+
+```{r}
+negatives2 <- negatives2 %>% 
+  mutate(sample = sample + 8573 + 1 ) # it's to not have any overlapping sample IDs
+```
+
+```{r}
+full_data <- bind_rows(positives2, negatives2)
+full_data %>% group_by(sample)
+```
+
+```{r}
+full_data %>%
+  group_by(sample)%>%
+  summarise(n_days = n()) %>%
+  filter(n_days != 30) # to check if every sample has 30 rows 
+
+full_data%>%
+  count(sample) %>% 
+  summarise(min(n), max(n)) # each sample has 30 rows
+ 
+```
+
+```{r}
+full_data %>% summary() # NAs for: lai, lst day/night, ndvi, smi, population
+```
+
+#EDA 
+
+```{r}
+
+# Group by fire occurrence and summarize over full_data
+summary_full <- full_data %>%
+  group_by(fire_occured) %>%
+  summarise(
+    across(c(t2m, rh, tp, smi, ssrd, lst_day), list(mean = mean, sd = sd), na.rm = TRUE))
+
+
+summary_full
+```
+
+```{r}
+# Static and semi-static variables of interest
+static_vars <- c("sample", "fire_occured", 
+                 "slope", "aspect", "curvature", "dem", 
+                 "ndvi", "lai", 
+                 "roads_distance", "population")
+
+# Collapse each sample to a single row
+sample_level_data <- full_data %>%
+  group_by(sample, fire_occured) %>%
+  summarise(across(all_of(static_vars[-c(1,2)]), mean, na.rm = TRUE))  # exclude 'sample' and 'fire_occured' from summarising
+
+# Now: compute mean and SD grouped by fire_occured
+summary_static <- sample_level_data %>%
+  group_by(fire_occured) %>%
+  summarise(across(everything(), list(mean = ~mean(.x, na.rm = TRUE),
+                                      sd = ~sd(.x, na.rm = TRUE)), .names = "{.col}_{.fn}"))
+
+
+summary_static
+```
+
+```{r}
+# Select relevant numeric variables (adjust as needed)
+vars_corr <- c("t2m", "rh", "tp", "smi", "ssrd", "sp",
+               "wind_speed", "lst_day", "lst_night", "d2m",
+               "ndvi", "lai", "roads_distance", "population")
+
+# Collapse full dataset to sample-level means
+cor_data <- full_data %>%
+  group_by(sample) %>%
+  summarise(across(all_of(vars_corr), mean, na.rm = TRUE))
+
+
+cor_matrix <- cor(cor_data %>% select(-sample), use = "pairwise.complete.obs")
+
+
+library(corrplot)
+
+corrplot(cor_matrix,
+         method = "color",        # Heatmap-style coloring
+         type = "upper",          # Show only upper triangle
+         order = "hclust",        # Cluster similar variables
+         addCoef.col = "black",   # Add numeric correlation values
+         tl.col = "black",        # Text label color
+         tl.srt = 45,             # Rotate labels for clarity
+         col = colorRampPalette(c("blue", "white", "red"))(200))             
+
+corrplot
+```
+
+
+```{r}
+
+
+# Variables to plot
+vars <- c("t2m", "smi", "ssrd", "ndvi", "lai", "roads_distance")
+
+# Loop through and plot each
+for (v in vars) {
+  ggplot(full_data, aes(x = factor(fire_occured), y = .data[[v]], fill = fire_occured)) +
+    geom_violin(trim = FALSE, alpha = 0.5) +
+    geom_boxplot(width = 0.1, outlier.shape = NA, color = "black") +
+    labs(title = paste("Distribution of", v, "by Fire Occurrence"),
+         x = "Fire Occurred", y = v) +
+    scale_fill_manual(values = c("0" = "#1f77b4", "1" = "#d62728")) +
+    theme_minimal() +
+    theme(legend.position = "none") -> p
+  
+  print(p)
+}
+
+```
+
+```{r}
+library(ggridges)
+vars_to_plot <- c("t2m", "rh", "ssrd", "smi", "tp")
+
+plot_ridgeline <- function(var_name) {
+  full_data %>%
+    filter(!is.na(.data[[var_name]])) %>%
+    mutate(
+      month = factor(month(time), levels = 1:12, labels = month.abb),
+      fire_status = factor(fire_occured, levels = c(0, 1), labels = c("No Fire", "Fire"))
+    ) %>%
+    ggplot(aes(x = .data[[var_name]], y = month, fill = fire_status)) +
+    geom_density_ridges(alpha = 0.6, scale = 1.1, rel_min_height = 0.01, aes(height = ..density..)) +
+    scale_fill_manual(values = c("No Fire" = "#1f77b4", "Fire" = "#d62728")) +
+    labs(
+      title = paste("Monthly Distribution of", var_name, "by Fire Status"),
+      fill = "Fire Status"
+    ) +
+    theme_ridges() +
+    theme(
+      legend.position = "right",
+      plot.title = element_text(size = 14, face = "bold"), 
+      axis.text.x = element_blank(), 
+      axis.title.y = element_blank()
+    )
+}
+
+# Generate and print plots for all variables
+plots <- map(vars_to_plot, plot_ridgeline)
+
+# To display plots one by one:
+walk(plots, print)
+
+
+#ajdust the months if you will include these. 
+
+
+```
+
+# NA investigation
+
+this is across the whole dataset, not just training
+
+ndvi NAs
+
+```{r}
+full_data %>%
+  group_by(sample) %>%
+  filter(any(is.na(ndvi)) & !all(is.na(ndvi))) %>% #samples where ndvi is missing in some rows but not all.
+  relocate(ndvi, lai, sample, time_idx)
+
+full_data %>%
+  group_by(sample) %>%
+  filter(all(is.na(ndvi))) %>% 
+  relocate(ndvi, lai, sample, time_idx) # drop, all of ndvi and lai are NAs across the whole window in each sample
+
+full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(ndvi))) %>%
+  summarise(
+    ndvi_sd = sd(ndvi, na.rm = TRUE),
+    ndvi_range = max(ndvi, na.rm = TRUE) - min(ndvi, na.rm = TRUE),
+    n_na = sum(is.na(ndvi)),
+    .groups = "drop"
+  ) %>%
+  summarise(
+    mean_sd = mean(ndvi_sd, na.rm = TRUE),
+    median_sd = median(ndvi_sd, na.rm = TRUE),
+    max_sd = max(ndvi_sd, na.rm = TRUE),
+    mean_range = mean(ndvi_range, na.rm = TRUE)
+  )
+
+compute_acf_lag1 <- function(vec) {
+  # remove NAs to avoid issues
+  vec <- na.omit(vec)
+  if (length(vec) < 2) return(NA)  # not enough data for ACF
+  acf(vec, lag.max = 1, plot = FALSE)$acf[2]  # lag 1 autocorrelation
+}
+
+# Apply it for both ndvi and lai, grouped by sample
+acf_results <- full_data %>%
+  group_by(sample) %>%
+  summarise(
+    ndvi_acf1 = compute_acf_lag1(ndvi),
+    lai_acf1  = compute_acf_lag1(lai),
+    .groups = "drop"
+  )
+
+# Summarize the results
+acf_summary <- acf_results %>%
+  summarise(
+    ndvi_mean_acf1 = mean(ndvi_acf1, na.rm = TRUE),
+    lai_mean_acf1  = mean(lai_acf1, na.rm = TRUE)
+  )
+
+print(acf_summary) # to see ndvi and lai autocorrelation, to justify using locf, locb 
+```
+
+lai NAs
+
+```{r}
+full_data %>%
+  group_by(sample) %>%
+  summarise(
+    total = n(),
+    lai_na_count = sum(is.na(lai)),
+    all_lai_na = all(is.na(lai)),
+    .groups = "drop"
+  ) %>%
+  filter(lai_na_count > 0)
+
+full_data %>%
+  group_by(sample) %>%
+  filter(any(is.na(lai)) & !all(is.na(lai))) %>%
+  relocate(lai, ndvi, sample, time_idx)
+
+full_data %>%
+  group_by(sample) %>%
+  filter(all(is.na(lai))) %>%
+  relocate(lai, ndvi, sample, time_idx)
+
+full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(lai))) %>%
+  summarise(
+    lai_sd = sd(lai, na.rm = TRUE),
+    lai_range = max(lai, na.rm = TRUE) - min(lai, na.rm = TRUE),
+    n_na = sum(is.na(lai)),
+    .groups = "drop"
+  ) %>%
+  summarise(
+    mean_sd = mean(lai_sd, na.rm = TRUE),
+    median_sd = median(lai_sd, na.rm = TRUE),
+    max_sd = max(lai_sd, na.rm = TRUE),
+    mean_range = mean(lai_range, na.rm = TRUE)
+  )
+
+# LAI seems temporally stable, with minior 
+```
+
+population NAs
+
+```{r}
+full_data %>% 
+  group_by(sample) %>% 
+  filter(all(is.na(population))) %>% # i don't have anything to imute those so i will drop em. 
+  relocate(population)
+```
+
+Smi NAs
+
+```{r}
+
+full_data %>% 
+  group_by(sample) %>% 
+  filter(all(is.na(smi)))
+  .relocate(smi)
+
+full_data %>% 
+  group_by(sample) %>% 
+  filter(any(is.na(smi))& !all(is.na(smi))) %>% 
+  relocate(smi, sample, time_idx)
+
+full_data %>%
+  filter(is.na(smi)) %>%
+  count(time_idx) %>%
+  ggplot(aes(x = time_idx, y = n)) +
+  geom_col(fill = "#0072B2") +
+  labs(title = "NA Distribution of SMI over Time Index", x = "Day in Window", y = "Number of NAs")
+
+full_data %>%
+  select(smi, tp, ssrd, t2m, rh, ndvi) %>%
+  drop_na() %>%
+  cor(use = "pairwise.complete.obs") # to see if i can impute through linear ref for, example
+
+
+full_data %>%
+  group_by(sample) %>%
+  filter(any(is.na(smi)) & !all(is.na(smi))) %>%
+  ungroup() %>% 
+  filter(is.na(smi)) %>%
+  count(time_idx) %>% 
+  ggplot(aes(x = time_idx, y = n)) +
+  geom_col(fill = "#0072B2") +
+  labs(
+    title = "Distribution of NA values in 'smi' across time_idx (partially missing samples)",
+    x = "Time Index (Day in 30-day window)",
+    y = "Number of NA values"
+  ) +
+  theme_minimal()
+
+
+full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(smi))) %>%
+  summarise(
+    smi_sd = sd(smi, na.rm = TRUE),
+    smi_range = max(smi, na.rm = TRUE) - min(smi, na.rm = TRUE),
+    n_na = sum(is.na(smi)),
+    .groups = "drop"
+  ) %>%
+  summarise(
+    mean_sd = mean(smi_sd, na.rm = TRUE),
+    median_sd = median(smi_sd, na.rm = TRUE),
+    max_sd = max(smi_sd, na.rm = TRUE),
+    mean_range = mean(smi_range, na.rm = TRUE)
+  )
+
+smi_acf <- full_data %>%
+  group_by(sample) %>%
+  summarise(
+    smi_acf1 = if (all(is.na(smi))) NA_real_ else {
+      acf_val <- acf(smi, plot = FALSE, lag.max = 1, na.action = na.pass)
+      acf_val$acf[2]  # lag-1 autocorrelation is at index 2
+    },
+    .groups = "drop"
+  )
+
+# Inspect distribution of ACF1 values
+summary(smi_acf$)
+```
+
+
+```{r}
+full_data %>% summary() # after treating all the NAs i'm left with 676230 row, 22541 sample where 7612 are positives and 14929 are negatives. 
+```
+
+# EDA again. 
+
+```{r}
+p0 <- full_data %>%
+  distinct(sample, .keep_all = TRUE) %>%
+  count(sample_type = if_else(fire_occured == 1 , "Positive", "Negative")) %>%
+  ggplot(aes(x = sample_type, y = n, fill = sample_type)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(aes(label = n), vjust = -0.5, size = 5) +
+  scale_fill_manual(values = c("Positive" = "#D73027", "Negative" = "#4575B4")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "Sample Type", y = "Count") +
+  theme_minimal(base_size = 14)
+
+p0
+# Save the plot to PDF for LaTeX
+#ggsave("figures/sample_distribution.pdf", plot = p0, width = 6, height = 5, device = cairo_pdf)
+```
+
+```{r}
+
+sample_tday <- full_data %>%
+  group_by(sample) %>%
+  summarise(fire_occured = unique(fire_occured),
+            t_day = max(time) + 1)
+
+p1 <- sample_tday %>%
+  filter(fire_occured == 1) %>%  # Only fire samples
+  mutate(month = month(t_day, label = TRUE, abbr = TRUE)) %>%
+  count(month) %>%
+  ggplot(aes(x = month, y = n)) +
+  geom_col(fill = "#D73027") +  # Red color for fire
+  geom_text(aes(label = n), vjust = -0.5, size = 5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    x = "Month of Ignition",
+    y = "Number of Fire Samples"
+  ) +
+  theme_minimal(base_size = 14)
+
+p1
+#ggsave("figures/seasonality.pdf", plot = p1, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+
+
+
+```{r}
+library(rnaturalearth)
+library(rnaturalearthdata)
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Define your bounding box
+xlim <- c(-9.76, 36.1)
+ylim <- c(30.7, 46.0)
+
+# Plot with styling
+p2 <- ggplot() +
+  geom_sf(data = world, fill = "#f0f0f0", color = "gray50", size = 0.3) +  # land with borders
+  geom_point(data = full_data %>%
+               filter(fire_occured == 1) %>%
+               distinct(sample, x, y, .keep_all = TRUE),
+             aes(x = x, y = y),
+             color = "#E63946", alpha = 0.6, size = 1.2) +
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.background = element_rect(fill = "#dbe9f6", color = NA),  # ocean color
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.grid = element_blank(), 
+    axis.title = element_blank()
+  )
+
+p2
+#ggsave("figures/spatial distri.pdf", plot = p2, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+
+
+
+```{r}
+
+facet_labels <- c(
+  t2m = "Temperature",
+  rh = "Relative Humidity",
+  ssrd = "Surface Solar Radiation",
+  smi = "Soil Moisture Index"
+)
+
+ignition_days <- full_data %>%
+  filter(time_idx == 29) %>%
+  mutate(t_day = time + days(1)) %>%
+  select(sample, fire_occured, t_day) # in this plot, i can filter even more to see if the t2m in recent years are higher, idk might be an insight
+
+summer_samples <- ignition_days %>%
+  filter(month(t_day) %in% 6:9)
+
+summer_fires <- full_data %>%
+  filter(sample %in% summer_samples$sample)
+
+p4 <- summer_fires %>%
+  select(sample, fire_occured, time_idx, t2m, ssrd, rh, smi) %>% 
+  pivot_longer(cols = c(t2m, ssrd, rh, smi), names_to = "variable", values_to = "value") %>%
+  group_by(time_idx, fire_occured, variable) %>%
+  summarise(mean = mean(value, na.rm = TRUE),
+            .groups = "drop") %>%
+  ggplot(aes(x = time_idx, y = mean, color = fire_occured)) +
+  geom_line(size = 1) +  # Legend will now appear by default
+  scale_color_manual(
+    values = c("firebrick", "steelblue"),
+    labels = c("Fire", "Non-Fire"),
+    name = NULL
+  ) +
+  facet_wrap(~variable, scales = "free_y", labeller = labeller(variable = facet_labels)) +
+  labs(
+    x = "Days Before Ignition",
+    y = "Mean Value"
+  ) +
+  theme_minimal() + 
+  theme(legend.position = "bottom") 
+
+p4
+
+#ggsave("figures/predictor_dynamics2.pdf", plot = p4, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+
+
+```{r}
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggrastr)
+
+dem_distri2 <- ggplot() +
+  geom_rect(
+    aes(xmin = -10.72, xmax = 36.74, ymin = 30.07, ymax = 47.7),
+    fill = "#e0f3f8", color = NA
+  ) +
+  geom_sf(data = land, fill = "#f0f0f0", color = "gray50", size = 0.2) +
+  rasterise(geom_sf(data = elev_sf, aes(color = dem), size = 0.2, alpha = 0.9), dpi = 600) +
+  scale_color_gradientn(
+    name = "Elevation (m)",
+    colors = c("#fee090", "#fc8d59", "#d73027"),
+    guide = guide_colorbar(barwidth = 0.4, barheight = 5, ticks = FALSE)
+  ) +
+  coord_sf(xlim = c(-10.72, 36.74), ylim = c(30.07, 47.7), expand = FALSE) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_text(size = 10),
+    panel.grid = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  ) +
+  scale_x_continuous(
+    breaks = seq(-10, 40, 10),
+    labels = function(x) paste0(abs(x), "°", ifelse(x < 0, "W", "E"))
+  ) +
+  scale_y_continuous(
+    breaks = seq(30, 50, 5),
+    labels = function(y) paste0(y, "°N")
+  )
+
+dem_distri2
+
+#ggsave("figures/dem_distri_rasterized.pdf", plot = dem_distri2, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+```{r}
+
+
+# Filter valid DEM values
+dem_data <- full_data %>%
+  filter(!is.na(dem))
+
+# Density plot filled by fire_occured, with no y-axis or legend
+dem_distri <- ggplot(dem_data, aes(x = dem, fill = factor(fire_occured))) +
+  geom_density(alpha = 0.7) +
+  scale_fill_manual(
+    values = c("0" = "#4575B4", "1" = "#E63946")
+  ) +
+  labs(
+    x = "Elevation (m)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    legend.position = "none"
+  )
+
+dem_distri
+
+#ggsave("figures/dem distri.pdf", plot = dem_distri, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+```{r}
+
+# Identify land cover columns (fractional proportions from 0 to 1)
+
+# 1. Select land cover columns and fire_occured
+lc_cols <- full_data %>% select(starts_with("lc_")) %>% names()
+
+# 2. Compute mean proportion per land cover type, for fire samples only
+land_cover_summary <- full_data %>%
+  filter(fire_occured == 1) %>%
+  select(all_of(lc_cols)) %>%
+  summarise(across(everything(), mean, na.rm = TRUE)) %>%
+  pivot_longer(cols = everything(), names_to = "land_cover", values_to = "mean_proportion") %>%
+  mutate(land_cover = str_remove(land_cover, "lc_")) %>%
+  arrange(desc(mean_proportion))
+
+# 3. Plot proportions
+land_cover_plot <- ggplot(land_cover_summary, aes(x = reorder(land_cover, mean_proportion), y = mean_proportion)) +
+  geom_col(fill = "#E63946") +
+  geom_text(
+    aes(label = scales::percent(mean_proportion, accuracy = 0.1)),
+    hjust = -0.1,
+    size = 4.2
+  ) +
+  coord_flip() +
+  labs(
+    x = "Land Cover Type",
+    y = "Mean Proportion"
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 0.1),
+    expand = expansion(mult = c(0, 0.15))  # adds space for labels
+  ) +
+  theme_minimal(base_size = 13) + 
+  theme(axis.title.y = element_blank())
+land_cover_plot
+
+#ggsave("figures/Mean lc prop.pdf", plot = land_cover_plot, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+```{r}
+
+
+# Define function to convert aspect in degrees to cardinal direction
+get_cardinal <- function(aspect_deg) {
+  case_when(
+    is.na(aspect_deg) ~ NA_character_,
+    aspect_deg >= 315 | aspect_deg < 45 ~ "North",
+    aspect_deg >= 45 & aspect_deg < 135 ~ "East",
+    aspect_deg >= 135 & aspect_deg < 225 ~ "South",
+    aspect_deg >= 225 & aspect_deg < 315 ~ "West"
+  )
+}
+
+# Apply to fire samples only
+aspect_data <- full_data %>%
+  filter(fire_occured == 1, time_idx == 29) %>%  # day t–1
+  mutate(cardinal = get_cardinal(aspect)) %>%
+  count(cardinal)
+
+# Plot
+aspect_plot <- ggplot(aspect_data, aes(x = cardinal, y = n, fill = cardinal)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = n), vjust = -0.5, size = 4.5) +  # ← adds labels above bars
+  scale_fill_manual(values = c(
+    "North" = "#1f78b4",
+    "East" = "#33a02c",
+    "South" = "#e31a1c",
+    "West" = "#ff7f00"
+  )) +
+  labs(
+    y = "Number of Fires"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank()
+  ) +
+  ylim(0, max(aspect_data$n) * 1.1)  # ← ensures space for text
+
+aspect_plot
+
+#ggsave("figures/aspect plot.pdf", plot = aspect_plot, width = 6, height = 5, device = cairo_pdf)  # Fire Count by Terrain Orientation
+```
+
+```{r}
+library(patchwork)
+library(scales)
+
+vars <- c("t2m", "ssrd", "rh", "smi", "sp","ndvi", "lai", "tp")
+
+# Convert to long format WITH UNIT CONVERSIONS
+df_long <- full_data %>%
+  select(all_of(vars), fire_occured) %>%
+  mutate(
+    ssrd = ssrd / 1000,  # Convert J/m² to kJ/m²
+    sp = sp / 1000,        # Convert Pa to kPa
+    tp = tp*1000
+  ) %>%
+  pivot_longer(cols = all_of(vars), names_to = "variable", values_to = "value") %>%
+  mutate(fire_occured = factor(fire_occured, levels = c(1, 0), labels = c("Fire samples", "Non-fire samples")))
+
+# Set custom color palette
+palette <- c("Fire samples" = "#E63946", "Non-fire samples" = "#4575B4")
+
+# Define units for each variable
+variable_units <- c(
+  "t2m" = "t2m (K)",
+  "ssrd" = "ssrd (kJ/m²)",
+  "rh" = "rh (%)",
+  "smi" = "smi (%)",
+  "sp" = "sp (kPa)",
+  "ndvi" = "ndvi (0-1)",
+  "lai" = "lai (m²/m²)",
+  "tp" = "tp (mm)"
+)
+
+# Generate individual plots
+plots <- map(vars, function(var_name) {
+  p <- df_long %>%
+    filter(variable == var_name) %>%
+    ggplot(aes(x = value, fill = fire_occured)) +
+    geom_density(alpha = 0.6, color = NA) +
+    scale_fill_manual(values = palette) +
+    labs(
+      title = variable_units[var_name],  # Use predefined units
+      x = NULL, 
+      y = NULL
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      axis.text.y = element_blank(),
+      axis.ticks.y = element_blank(),
+      legend.position = "none",
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    )
+  
+  return(p)
+})
+
+
+# Combine plots (rest of the code remains the same)
+combined_plot <- wrap_plots(plots, ncol = 4, nrow = 2)
+legend_plot <- df_long %>%
+  filter(variable == "t2m") %>%
+  ggplot(aes(x = value, fill = fire_occured)) +
+  geom_blank() +
+  scale_fill_manual(values = palette, name = NULL) +
+  theme_void(base_size = 11) +
+  theme(legend.position = "bottom")
+final_plot <- combined_plot / legend_plot + plot_layout(heights = c(10, 1))
+final_plot
+
+#ggsave("figures/vdistributions.pdf", plot = final_plot, width = 6, height = 5, device = cairo_pdf)
+```
+
+
+```{r}
+met_corr <- c("t2m", "rh", "tp", "smi", "ssrd", "sp",
+               "wind_speed", "lst_day", "lst_night", "d2m", "dem", "curvature", "slope","population", "roads_distance", "ndvi", "lai")
+
+# Collapse full dataset to sample-level means
+met_data <- full_data %>%
+  group_by(sample) %>%
+  summarise(across(all_of(met_corr), mean, na.rm = TRUE))
+
+
+cor_matrix1 <- cor(met_data %>% select(-sample), use = "pairwise.complete.obs")
+
+
+library(corrplot)
+
+#pdf("figures/corrplot.pdf", width = 6, height = 5)
+corrplot(cor_matrix1,
+         method = "color",
+         type = "upper",
+         order = "hclust",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         col = colorRampPalette(c("blue", "white", "red"))(200),
+         number.cex = 0.6,  # Adjust correlation number size
+         tl.cex = 0.8)      # Adjust label text size
+#dev.off() # it was to download it 
+```
+
+
+#NA treatment
+
+NDVI 
+```{r}
+full_data <- full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(ndvi))) %>%  # Drop samples with all NAs in ndvi
+  ungroup()
+
+# Now, fill the missing values for NDVI in partially missing samples
+full_data <- full_data %>%
+  group_by(sample) %>%
+  mutate(
+    ndvi = zoo::na.locf(ndvi, na.rm = FALSE),        # forward fill (LOCF)
+    ndvi = zoo::na.locf(ndvi, fromLast = TRUE, na.rm = FALSE)  # backward fill (NOCB)
+  ) %>%
+  ungroup()
+```
+
+LAI
+
+```{r}
+full_data <- full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(lai))) %>% # drop the all missing lai sample
+  ungroup()
+
+# Step 2: Impute partially missing LAI values using LOCF (forward and backward fill)
+full_data <- full_data %>%
+  group_by(sample) %>%
+  mutate(
+    lai = zoo::na.locf(lai, na.rm = FALSE),                # Forward fill
+    lai = zoo::na.locf(lai, fromLast = TRUE, na.rm = FALSE) # Backward fill
+  ) %>%
+  ungroup()
+```
+
+Population
+
+```{r}
+# Drop samples with all population values missing
+full_data <- full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(population))) %>%
+  ungroup()
+```
+
+SMI 
+
+```{r}
+# Dropping samples with all missing SMI
+full_data <- full_data %>%
+  group_by(sample) %>%
+  filter(!all(is.na(smi))) %>%
+  ungroup()
+
+
+full_data <- full_data %>%
+  group_by(sample) %>%
+  mutate(smi = zoo::na.locf(smi, na.rm = FALSE, fromLast = TRUE)) %>%  # LOCB for missing values at the start
+  mutate(smi = zoo::na.locf(smi, na.rm = FALSE)) %>%  # LOCF for remaining NAs
+  ungroup()
+```
+
+
+```{r}
+full_data %>% summarise_all(~sum(is.na(.)))
+```
+```{r}
+full_data <- full_data %>% select(-lst_day, -lst_night)
+full_data
+```
